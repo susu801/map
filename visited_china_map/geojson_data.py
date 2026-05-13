@@ -9,7 +9,9 @@ from typing import Any
 from .data import CITY_FEATURES, TAIWAN_REGION_FEATURE, CityFeature, Ring
 
 DEFAULT_ASSET_PATH = Path(__file__).with_name("assets") / "china_city_boundaries.geojson"
+DEFAULT_NEIGHBOR_ASSET_PATH = Path(__file__).with_name("assets") / "neighbor_boundaries.geojson"
 ASSET_ENV_VAR = "VISITED_CHINA_MAP_GEOJSON"
+NEIGHBOR_ASSET_ENV_VAR = "VISITED_CHINA_MAP_NEIGHBOR_GEOJSON"
 
 
 def load_city_features() -> list[CityFeature]:
@@ -18,6 +20,14 @@ def load_city_features() -> list[CityFeature]:
         return _with_fallback_regions(_load_geojson_features(str(path)))
 
     return _with_fallback_regions(CITY_FEATURES)
+
+
+def load_neighbor_features() -> list[CityFeature]:
+    path = Path(os.environ.get(NEIGHBOR_ASSET_ENV_VAR, DEFAULT_NEIGHBOR_ASSET_PATH))
+    if not path.exists():
+        return []
+
+    return _load_geojson_features(str(path))
 
 
 @lru_cache(maxsize=4)
@@ -43,8 +53,8 @@ def _load_geojson_features(path: str) -> list[CityFeature]:
 def _parse_feature(feature: dict[str, Any]) -> CityFeature | None:
     properties = feature.get("properties") or {}
     geometry = feature.get("geometry") or {}
-    code = _string_property(properties, "adcode", "code", "gb", "gbcode")
-    name = _string_property(properties, "name", "fullname", "full_name")
+    code = _string_property(properties, "adcode", "code", "gb", "gbcode", "shapeID", "shapeISO", "id")
+    name = _string_property(properties, "name", "fullname", "full_name", "shapeName")
 
     if code is None or name is None:
         return None
@@ -57,6 +67,8 @@ def _parse_feature(feature: dict[str, Any]) -> CityFeature | None:
         "code": code,
         "name": name,
         "province_code": _province_code(code),
+        "country_code": _string_property(properties, "country_code", "boundaryISO", "shapeGroup") or "",
+        "country_name": _string_property(properties, "country_name", "boundaryName") or "",
         "geometry": rings,
         "aliases": _aliases_for_code(code),
     }

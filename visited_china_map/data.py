@@ -10,6 +10,8 @@ class CityFeature(TypedDict, total=False):
     code: str
     name: str
     province_code: str
+    country_code: str
+    country_name: str
     geometry: list[Ring]
     aliases: list[str]
 

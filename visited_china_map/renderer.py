@@ -17,7 +17,7 @@ from .data import (
     Position,
     Ring,
 )
-from .geojson_data import load_city_features
+from .geojson_data import load_city_features, load_neighbor_features
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -37,6 +37,10 @@ WarningCallback: TypeAlias = Callable[["RenderWarning"], None]
 
 class MapTheme(TypedDict, total=False):
     background: str
+    background_accent: str
+    grid_line: str
+    terrain_line: str
+    neighbor_fill: str
     land_fill: str
     land_stroke: str
     city_fill: str
@@ -44,9 +48,12 @@ class MapTheme(TypedDict, total=False):
     visited_fill: str
     visited_stroke: str
     inset_stroke: str
+    panel_fill: str
+    panel_stroke: str
     label_text: str
     label_halo: str
     label_marker: str
+    muted_text: str
 
 
 @dataclass(frozen=True)
@@ -57,6 +64,10 @@ class RenderWarning:
 
 DEFAULT_THEME: MapTheme = {
     "background": "#f8fbff",
+    "background_accent": "#e8f2f7",
+    "grid_line": "#dbe7ef",
+    "terrain_line": "#d4e2ec",
+    "neighbor_fill": "#edf5f1",
     "land_fill": "#edf3f8",
     "land_stroke": "#aab9c8",
     "city_fill": "#dfe8f0",
@@ -64,9 +75,12 @@ DEFAULT_THEME: MapTheme = {
     "visited_fill": "#21b7a8",
     "visited_stroke": "#0f766e",
     "inset_stroke": "#8fa0b1",
+    "panel_fill": "#ffffffd8",
+    "panel_stroke": "#c7d7e3",
     "label_text": "#1f3347",
     "label_halo": "#ffffff",
     "label_marker": "#0f766e",
+    "muted_text": "#607587",
 }
 
 FONT_CANDIDATES = (
@@ -83,11 +97,29 @@ MUNICIPALITY_PREFIXES = {
 }
 
 CITY_BOUNDARY_FEATURES = load_city_features()
+NEIGHBOR_BOUNDARY_FEATURES = load_neighbor_features()
 FEATURE_INDEX: dict[str, CityFeature] = {}
 for feature in CITY_BOUNDARY_FEATURES:
     FEATURE_INDEX[feature["code"]] = feature
     for alias in feature.get("aliases", []):
         FEATURE_INDEX[alias] = feature
+
+NEIGHBOR_COUNTRY_LABELS = {
+    "AFG": "阿富汗",
+    "BTN": "不丹",
+    "IND": "印度",
+    "KAZ": "哈萨克斯坦",
+    "KGZ": "吉尔吉斯斯坦",
+    "LAO": "老挝",
+    "MNG": "蒙古",
+    "MMR": "缅甸",
+    "NPL": "尼泊尔",
+    "PAK": "巴基斯坦",
+    "PRK": "朝鲜",
+    "RUS": "俄罗斯",
+    "TJK": "塔吉克斯坦",
+    "VNM": "越南",
+}
 
 
 def render_visited_china_map(
@@ -171,6 +203,8 @@ def _render_to_raster(width: int, height: int, theme: dict[str, str], visited: s
     project = _create_projector(width, height)
 
     _fill_all(pixels, _parse_color(theme["background"]))
+    _draw_background_details(pixels, width, height, theme)
+    _draw_neighbor_boundaries(pixels, width, height, project, theme)
 
     for feature in CITY_BOUNDARY_FEATURES:
         is_visited = feature["code"] in visited
@@ -185,19 +219,21 @@ def _render_to_raster(width: int, height: int, theme: dict[str, str], visited: s
         )
 
     _draw_city_labels(pixels, width, height, project, theme, visited)
+    _draw_edge_content(pixels, width, height, project, theme, visited)
     return pixels
 
 
 def _create_projector(width: int, height: int) -> Projector:
-    padding_x = width * 0.08
-    padding_y = height * 0.08
+    padding_x = width * 0.1
+    top_padding = max(20.0, height * 0.15)
+    bottom_padding = max(20.0, height * 0.13)
     map_width = width - padding_x * 2
-    map_height = height - padding_y * 2
+    map_height = height - top_padding - bottom_padding
     lon_span = CHINA_BOUNDS["max_lon"] - CHINA_BOUNDS["min_lon"]
     lat_span = CHINA_BOUNDS["max_lat"] - CHINA_BOUNDS["min_lat"]
     scale = min(map_width / lon_span, map_height / lat_span)
     offset_x = (width - lon_span * scale) / 2
-    offset_y = (height - lat_span * scale) / 2
+    offset_y = top_padding + (map_height - lat_span * scale) / 2
 
     def project(position: Position) -> Point:
         lon, lat = position
@@ -259,6 +295,82 @@ def _stroke_rect(
     _draw_line(pixels, width, height, x + rect_width, y, x + rect_width, y + rect_height, color)
     _draw_line(pixels, width, height, x + rect_width, y + rect_height, x, y + rect_height, color)
     _draw_line(pixels, width, height, x, y + rect_height, x, y, color)
+
+
+def _draw_background_details(pixels: bytearray, width: int, height: int, theme: dict[str, str]) -> None:
+    accent = _parse_color(theme["background_accent"])
+    terrain = _parse_color(theme["terrain_line"])
+
+    top_band = max(1, int(height * 0.12))
+    bottom_band = max(1, int(height * 0.1))
+    _fill_rect(pixels, width, height, 0, 0, width, top_band, accent)
+    _fill_rect(pixels, width, height, 0, height - bottom_band, width, bottom_band, accent)
+
+    for index, y_ratio in enumerate((0.2, 0.3, 0.41, 0.56, 0.7, 0.82)):
+        points = _terrain_line_points(width, height, y_ratio, index)
+        for start, end in zip(points, points[1:]):
+            _draw_line(pixels, width, height, start[0], start[1], end[0], end[1], terrain)
+
+    corner = max(22, int(min(width, height) * 0.08))
+    stroke = _parse_color(theme["inset_stroke"])
+    _draw_line(pixels, width, height, 18, 18, 18 + corner, 18, stroke)
+    _draw_line(pixels, width, height, 18, 18, 18, 18 + corner, stroke)
+    _draw_line(pixels, width, height, width - 18 - corner, 18, width - 18, 18, stroke)
+    _draw_line(pixels, width, height, width - 18, 18, width - 18, 18 + corner, stroke)
+    _draw_line(pixels, width, height, 18, height - 18, 18 + corner, height - 18, stroke)
+    _draw_line(pixels, width, height, 18, height - 18 - corner, 18, height - 18, stroke)
+    _draw_line(pixels, width, height, width - 18 - corner, height - 18, width - 18, height - 18, stroke)
+    _draw_line(pixels, width, height, width - 18, height - 18 - corner, width - 18, height - 18, stroke)
+
+
+def _terrain_line_points(width: int, height: int, y_ratio: float, seed: int) -> list[Point]:
+    points: list[Point] = []
+    steps = 9
+    for index in range(steps + 1):
+        x = width * index / steps
+        wave = ((index + seed) % 3 - 1) * height * 0.012
+        slope = (index - steps / 2) * height * 0.004
+        points.append((x, height * y_ratio + wave + slope))
+    return points
+
+
+def _draw_neighbor_boundaries(
+    pixels: bytearray,
+    width: int,
+    height: int,
+    project: Projector,
+    theme: dict[str, str],
+) -> None:
+    if not NEIGHBOR_BOUNDARY_FEATURES:
+        return
+
+    fill = _parse_color(theme["neighbor_fill"])
+    stroke = _parse_color(theme["terrain_line"])
+
+    if Image is not None and ImageDraw is not None:
+        image = Image.frombytes("RGBA", (width, height), bytes(pixels))
+        draw = ImageDraw.Draw(image, "RGBA")
+        for feature in NEIGHBOR_BOUNDARY_FEATURES:
+            for ring in feature["geometry"]:
+                if not _ring_intersects_view(ring, width, height, project):
+                    continue
+
+                polygon = [project(position) for position in ring]
+                draw.polygon(polygon, fill=fill, outline=stroke)
+        pixels[:] = image.tobytes()
+        return
+
+    for feature in NEIGHBOR_BOUNDARY_FEATURES:
+        visible_rings = [ring for ring in feature["geometry"] if _ring_intersects_view(ring, width, height, project)]
+        if visible_rings:
+            _draw_rings(pixels, width, height, visible_rings, project, fill, stroke)
+
+
+def _ring_intersects_view(ring: Ring, width: int, height: int, project: Projector) -> bool:
+    projected = [project(position) for position in ring]
+    xs = [point[0] for point in projected]
+    ys = [point[1] for point in projected]
+    return max(xs) >= 0 and min(xs) <= width and max(ys) >= 0 and min(ys) <= height
 
 
 def _fill_polygon(
@@ -384,8 +496,255 @@ def _draw_city_labels(
     pixels[:] = image.tobytes()
 
 
+def _draw_edge_content(
+    pixels: bytearray,
+    width: int,
+    height: int,
+    project: Projector,
+    theme: dict[str, str],
+    visited: set[str],
+) -> None:
+    if Image is None or ImageDraw is None or ImageFont is None:
+        return
+
+    title_font = _load_font(width, 0.03, 18, 34)
+    body_font = _load_font(width, 0.016, 11, 18)
+    small_font = _load_font(width, 0.013, 10, 15)
+    if title_font is None or body_font is None or small_font is None:
+        return
+
+    image = Image.frombytes("RGBA", (width, height), bytes(pixels))
+    draw = ImageDraw.Draw(image, "RGBA")
+
+    text = _parse_color(theme["label_text"])
+    muted = _parse_color(theme["muted_text"])
+    panel_fill = _parse_color(theme["panel_fill"])
+    panel_stroke = _parse_color(theme["panel_stroke"])
+    visited_fill = _parse_color(theme["visited_fill"])
+    inset = _parse_color(theme["inset_stroke"])
+
+    margin = max(16, int(min(width, height) * 0.035))
+    top = max(10, int(height * 0.035))
+    title = "中国城市足迹"
+    subtitle = "Visited city map"
+    draw.text((margin, top), title, font=title_font, fill=text)
+    draw.text((margin, top + _font_height(draw, title_font) + 5), subtitle, font=small_font, fill=muted)
+
+    total = len(CITY_BOUNDARY_FEATURES)
+    count = len(visited)
+    percent = f"{(count / total * 100):.1f}%" if total else "0.0%"
+    stat_items = (("已点亮", str(count)), ("覆盖率", percent))
+    _draw_stat_group(draw, width, margin, top, stat_items, body_font, small_font, text, muted, panel_fill, panel_stroke)
+
+    _draw_neighbor_labels(draw, width, height, project, small_font, muted)
+    _draw_travel_decorations(draw, width, height, margin, visited_fill, inset, muted)
+
+    if width >= 620:
+        names = _visited_city_names(visited)
+        summary = "、".join(names[:6]) if names else "暂无已访问城市"
+        if len(names) > 6:
+            summary += f" 等 {len(names)} 城"
+        _draw_summary(draw, width, height, margin, summary, body_font, small_font, text, muted, panel_fill, panel_stroke)
+
+    pixels[:] = image.tobytes()
+
+
+def _draw_stat_group(
+    draw,
+    width: int,
+    margin: int,
+    top: int,
+    items: tuple[tuple[str, str], ...],
+    body_font,
+    small_font,
+    text: RGBA,
+    muted: RGBA,
+    fill: RGBA,
+    stroke: RGBA,
+) -> None:
+    gap = max(6, int(width * 0.008))
+    card_width = max(58, int(width * 0.085))
+    card_height = max(42, int(width * 0.055))
+    group_width = len(items) * card_width + (len(items) - 1) * gap
+    x = width - margin - group_width
+
+    for label, value in items:
+        _rounded_rect(draw, (x, top, x + card_width, top + card_height), 8, fill, stroke)
+        value_box = draw.textbbox((0, 0), value, font=body_font)
+        label_box = draw.textbbox((0, 0), label, font=small_font)
+        draw.text((x + (card_width - (value_box[2] - value_box[0])) / 2, top + 7), value, font=body_font, fill=text)
+        draw.text(
+            (x + (card_width - (label_box[2] - label_box[0])) / 2, top + card_height - _font_height(draw, small_font) - 7),
+            label,
+            font=small_font,
+            fill=muted,
+        )
+        x += card_width + gap
+
+
+def _draw_neighbor_labels(
+    draw,
+    width: int,
+    height: int,
+    project: Projector,
+    small_font,
+    muted: RGBA,
+) -> None:
+    label_color = (*muted[:3], 150)
+
+    labels: list[tuple[str, float, float]] = []
+    if NEIGHBOR_BOUNDARY_FEATURES:
+        labels = _neighbor_country_label_points(width, height, project)
+    else:
+        labels = [
+            ("蒙古", width * 0.77, height * 0.18),
+            ("中亚", width * 0.09, height * 0.36),
+            ("南亚", width * 0.12, height * 0.77),
+            ("东南亚", width * 0.81, height * 0.83),
+        ]
+
+    for label, x, y in labels:
+        draw.text((x, y), label, font=small_font, fill=label_color)
+
+
+def _neighbor_country_label_points(width: int, height: int, project: Projector) -> list[tuple[str, float, float]]:
+    best_by_country: dict[str, tuple[str, float, Point]] = {}
+    for feature in NEIGHBOR_BOUNDARY_FEATURES:
+        country_code = feature.get("country_code") or feature["code"]
+        country_name = NEIGHBOR_COUNTRY_LABELS.get(country_code, feature.get("country_name") or country_code)
+        for ring in feature["geometry"]:
+            if not _ring_intersects_view(ring, width, height, project):
+                continue
+
+            polygon = [project(position) for position in ring]
+            area = abs(_polygon_area(polygon))
+            if area <= 1:
+                continue
+
+            current = best_by_country.get(country_code)
+            if current is None or area > current[1]:
+                best_by_country[country_code] = (country_name, area, _polygon_centroid(polygon))
+
+    labels = []
+    for country_name, _, point in best_by_country.values():
+        x, y = point
+        if 8 <= x <= width - 60 and 80 <= y <= height - 80:
+            labels.append((country_name, x, y))
+
+    return labels[:8]
+
+
+def _draw_travel_decorations(
+    draw,
+    width: int,
+    height: int,
+    margin: int,
+    accent: RGBA,
+    line: RGBA,
+    muted: RGBA,
+) -> None:
+    if width < 520 or height < 420:
+        return
+
+    route = (
+        (margin + 20, height - margin - 34),
+        (margin + 76, height - margin - 62),
+        (margin + 132, height - margin - 42),
+        (margin + 184, height - margin - 72),
+    )
+    route_line = (*line[:3], 175)
+    for start, end in zip(route, route[1:]):
+        draw.line((start, end), fill=route_line, width=2)
+    for index, point in enumerate(route):
+        _draw_pin(draw, point[0], point[1], 6 if index in (0, len(route) - 1) else 4, accent, (255, 255, 255, 235))
+
+    _draw_compass(draw, width - margin - 66, height - margin - 126, 28, (*muted[:3], 165), accent)
+    _draw_plane(draw, margin + 58, margin + 88, 34, (*muted[:3], 145))
+
+
+def _draw_pin(draw, x: float, y: float, radius: int, fill: RGBA, halo: RGBA) -> None:
+    draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=fill, outline=halo, width=1)
+    draw.polygon(((x, y + radius + 8), (x - radius * 0.55, y + radius * 0.4), (x + radius * 0.55, y + radius * 0.4)), fill=fill)
+
+
+def _draw_compass(draw, x: float, y: float, radius: int, stroke: RGBA, accent: RGBA) -> None:
+    draw.ellipse((x - radius, y - radius, x + radius, y + radius), outline=stroke, width=2)
+    draw.line((x, y - radius - 6, x, y + radius + 6), fill=stroke, width=1)
+    draw.line((x - radius - 6, y, x + radius + 6, y), fill=stroke, width=1)
+    draw.polygon(((x, y - radius + 5), (x - 7, y + 3), (x, y - 2), (x + 7, y + 3)), fill=accent)
+    draw.polygon(((x, y + radius - 5), (x - 6, y - 2), (x, y + 2), (x + 6, y - 2)), fill=(*stroke[:3], 110))
+
+
+def _draw_plane(draw, x: float, y: float, size: int, color: RGBA) -> None:
+    draw.line((x - size, y + size * 0.35, x + size, y - size * 0.35), fill=color, width=2)
+    draw.polygon(
+        (
+            (x + size, y - size * 0.35),
+            (x + size * 0.62, y - size * 0.1),
+            (x + size * 0.42, y - size * 0.46),
+        ),
+        fill=color,
+    )
+    draw.line((x - size * 0.18, y + size * 0.08, x - size * 0.5, y - size * 0.36), fill=color, width=2)
+    draw.line((x - size * 0.06, y + size * 0.04, x - size * 0.02, y + size * 0.5), fill=color, width=2)
+
+
+def _draw_summary(
+    draw,
+    width: int,
+    height: int,
+    margin: int,
+    summary: str,
+    body_font,
+    small_font,
+    text: RGBA,
+    muted: RGBA,
+    fill: RGBA,
+    stroke: RGBA,
+) -> None:
+    panel_width = min(max(260, int(width * 0.38)), width - margin * 2)
+    panel_height = max(50, int(height * 0.065))
+    x = width - margin - panel_width
+    y = height - margin - panel_height
+    _rounded_rect(draw, (x, y, x + panel_width, y + panel_height), 8, fill, stroke)
+    draw.text((x + 14, y + 8), "最近点亮", font=small_font, fill=muted)
+    clipped = _ellipsize(draw, summary, body_font, panel_width - 28)
+    draw.text((x + 14, y + panel_height - _font_height(draw, body_font) - 9), clipped, font=body_font, fill=text)
+
+
+def _visited_city_names(visited: set[str]) -> list[str]:
+    return [feature["name"] for feature in CITY_BOUNDARY_FEATURES if feature["code"] in visited]
+
+
+def _rounded_rect(draw, box: tuple[int, int, int, int], radius: int, fill: RGBA, outline: RGBA) -> None:
+    draw.rounded_rectangle(box, radius=radius, fill=fill, outline=outline, width=1)
+
+
+def _font_height(draw, font) -> int:
+    bbox = draw.textbbox((0, 0), "国", font=font)
+    return bbox[3] - bbox[1]
+
+
+def _ellipsize(draw, text: str, font, max_width: int) -> str:
+    if draw.textlength(text, font=font) <= max_width:
+        return text
+
+    suffix = "..."
+    available = max_width - int(draw.textlength(suffix, font=font))
+    clipped = ""
+    for char in text:
+        if draw.textlength(clipped + char, font=font) > available:
+            break
+        clipped += char
+    return clipped + suffix
+
+
 def _load_label_font(width: int):
-    font_size = _clamp(int(width * 0.018), 13, 22)
+    return _load_font(width, 0.018, 13, 22)
+
+
+def _load_font(width: int, ratio: float, minimum: int, maximum: int):
+    font_size = _clamp(int(width * ratio), minimum, maximum)
     configured_font = os.environ.get("VISITED_CHINA_MAP_FONT")
     candidates = (configured_font, *FONT_CANDIDATES) if configured_font else FONT_CANDIDATES
 

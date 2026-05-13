@@ -18,10 +18,31 @@ Generate it from an online city-boundary source:
 python3 scripts/download_map_assets.py
 ```
 
+To add precise surrounding-country administrative boundaries for the map background:
+
+```bash
+python3 scripts/download_map_assets.py --skip-china --include-neighbors --neighbor-adm ADM1
+```
+
+The neighbor asset is written to:
+
+```text
+visited_china_map/assets/neighbor_boundaries.geojson
+```
+
+Set `--neighbor-adm ADM2` if you want denser lower-level administrative boundaries, but expect a much larger file and slower rendering. Neighbor data is downloaded from geoBoundaries and requires proper attribution and license review before production release.
+
 Or point the service at your own reviewed/licensed GeoJSON:
 
 ```bash
 VISITED_CHINA_MAP_GEOJSON=/path/to/china_city_boundaries.geojson \
+python3 -m visited_china_map.server --host 127.0.0.1 --port 8000
+```
+
+You can also provide a custom neighbor boundary pack:
+
+```bash
+VISITED_CHINA_MAP_NEIGHBOR_GEOJSON=/path/to/neighbor_boundaries.geojson \
 python3 -m visited_china_map.server --host 127.0.0.1 --port 8000
 ```
 
