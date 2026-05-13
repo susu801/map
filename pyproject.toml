@@ -1,0 +1,14 @@
+[project]
+name = "visited-china-map"
+version = "0.1.0"
+description = "Render China visited-city highlight maps from GB/T administrative city codes."
+requires-python = ">=3.11"
+readme = "README.md"
+license = "MIT"
+dependencies = ["Pillow>=10"]
+
+[project.scripts]
+visited-china-map-service = "visited_china_map.server:main"
+
+[tool.setuptools.packages.find]
+include = ["visited_china_map*"]
